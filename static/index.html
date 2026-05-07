@@ -4,8 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BugLens AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs/loader.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -801,6 +805,201 @@
       .main-content { padding: 1rem; }
       header { padding: 0 1rem; }
     }
+
+    /* ===== Premium IDE refresh overrides ===== */
+    :root {
+      --bg: #0B1020;
+      --surface: #111827;
+      --surface-2: #1A2238;
+      --card: #1A2238;
+      --accent: #8B5CF6;
+      --cyan: #06B6D4;
+      --text: #E5E7EB;
+      --muted: #94A3B8;
+      --border: rgba(148,163,184,0.18);
+      --accent-glow: rgba(139,92,246,0.35);
+    }
+    body {
+      background:
+        radial-gradient(1200px 400px at 10% -10%, rgba(139,92,246,0.12), transparent 45%),
+        radial-gradient(900px 380px at 90% 0%, rgba(6,182,212,0.1), transparent 40%),
+        var(--bg);
+    }
+    .app-body {
+      grid-template-columns: 280px 1fr;
+      gap: 0;
+    }
+    .sidebar {
+      background: linear-gradient(180deg, rgba(26,34,56,0.9), rgba(17,24,39,0.92));
+      border-right: 1px solid var(--border);
+      box-shadow: inset -1px 0 0 rgba(255,255,255,0.03);
+    }
+    .sidebar-search {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(11,16,32,0.8);
+      color: var(--text);
+      padding: 0.56rem 0.75rem;
+      font-size: 0.78rem;
+      outline: none;
+      margin-bottom: 0.85rem;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .sidebar-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139,92,246,0.15); }
+    .recent-card {
+      border-radius: 12px;
+      background: rgba(26,34,56,0.9);
+      transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .recent-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.28), 0 0 0 1px rgba(139,92,246,0.2);
+    }
+    .main-content {
+      padding: 1rem 1.1rem;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 420px;
+      gap: 1rem;
+      align-items: start;
+      min-height: calc(100vh - 56px);
+    }
+    .center-panel, .analysis-panel {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(26,34,56,0.95), rgba(17,24,39,0.94));
+      box-shadow: 0 20px 44px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.02);
+      min-width: 0;
+    }
+    .center-panel { padding: 0.95rem; }
+    .analysis-panel {
+      padding: 0.9rem;
+      display: flex;
+      flex-direction: column;
+      min-height: 640px;
+    }
+    .editor-shell {
+      position: relative;
+      display: block;
+      border: 1px solid rgba(148,163,184,0.2);
+      background: #0e1629;
+      border-radius: 14px;
+      overflow: clip;
+      min-height: 460px;
+      min-width: 0;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    #monaco-editor {
+      width: 100%;
+      height: 460px;
+      min-width: 0;
+      max-width: 100%;
+      position: relative;
+      padding-right: 0;
+      overflow: hidden;
+    }
+    #monaco-editor .overflow-guard { max-width: 100%; }
+    .hidden-textarea { position: absolute; opacity: 0; pointer-events: none; inset: 0; width: 1px; height: 1px; }
+    .editor-empty-state {
+      position: absolute;
+      inset: 1rem auto auto 1rem;
+      color: rgba(148,163,184,0.9);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      line-height: 1.55;
+      pointer-events: none;
+      max-width: 72ch;
+      white-space: pre-line;
+    }
+    .editor-empty-state.hidden { display: none; }
+    .btn-analyze {
+      background: linear-gradient(95deg, #8B5CF6, #06B6D4);
+      border: 0;
+      box-shadow: 0 12px 30px rgba(139,92,246,0.3), 0 0 0 1px rgba(255,255,255,0.08) inset;
+      animation: pulseGlow 2.4s ease-in-out infinite;
+    }
+    .btn-analyze:hover { box-shadow: 0 14px 34px rgba(139,92,246,0.45), 0 0 18px rgba(6,182,212,0.35); }
+    @keyframes pulseGlow {
+      0%, 100% { box-shadow: 0 12px 30px rgba(139,92,246,0.26), 0 0 0 1px rgba(255,255,255,0.08) inset; }
+      50% { box-shadow: 0 14px 36px rgba(139,92,246,0.4), 0 0 18px rgba(6,182,212,0.3); }
+    }
+    .trust-list { display: grid; gap: 0.35rem; margin-top: 0.4rem; }
+    .trust-item {
+      font-size: 0.73rem;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.35rem 0.55rem;
+      background: rgba(11,16,32,0.55);
+      width: fit-content;
+    }
+    .analysis-empty {
+      border: 1px dashed rgba(148,163,184,0.32);
+      background: rgba(11,16,32,0.55);
+      border-radius: 12px;
+      padding: 0.85rem;
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.5;
+    }
+    .analysis-empty strong { color: var(--text); }
+    .compiler-error-card {
+      display: none;
+      border: 1px solid rgba(239,68,68,0.55);
+      background: linear-gradient(180deg, rgba(127,29,29,0.28), rgba(69,10,10,0.2));
+      border-radius: 12px;
+      padding: 0.8rem 0.9rem;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .compiler-error-title {
+      color: #FCA5A5;
+      font-weight: 700;
+      font-size: 0.8rem;
+      margin-bottom: 0.4rem;
+    }
+    .compiler-error-text {
+      color: #FEE2E2;
+      font-size: 0.74rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--font-mono);
+    }
+    #results-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      background: transparent;
+      border: 0;
+      padding: 0;
+      min-height: 100%;
+    }
+    #results-panel.loading {
+      position: relative;
+      overflow: hidden;
+    }
+    #results-panel.loading::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(100deg, transparent 30%, rgba(148,163,184,0.14) 45%, transparent 60%);
+      animation: shimmer 1.3s linear infinite;
+      pointer-events: none;
+    }
+    @keyframes shimmer {
+      from { transform: translateX(-100%); }
+      to { transform: translateX(100%); }
+    }
+    @media (max-width: 1200px) {
+      .main-content { grid-template-columns: 1fr; }
+      .analysis-panel { min-height: 0; }
+    }
+    @media (max-width: 760px) {
+      .sidebar { position: relative; height: auto; }
+      #monaco-editor { height: 380px; }
+      .editor-shell { min-height: 380px; }
+    }
   </style>
 </head>
 <body>
@@ -823,6 +1022,7 @@
 
   <!-- ─── SIDEBAR ─── -->
   <aside class="sidebar">
+    <input class="sidebar-search" type="text" placeholder="Search scans..." aria-label="Search recent scans" />
 
     <div>
       <div class="sb-label">Language</div>
@@ -868,10 +1068,21 @@
       </span>
     </div>
 
+    <div>
+      <div class="sb-label">Trust Indicators</div>
+      <div class="trust-list">
+        <span class="trust-item">Runs Locally</span>
+        <span class="trust-item">Privacy First</span>
+        <span class="trust-item">No Code Uploaded</span>
+        <span class="trust-item">Zero API Cost</span>
+      </div>
+    </div>
+
   </aside>
 
   <!-- ─── MAIN CONTENT ─── -->
   <main class="main-content">
+    <section class="center-panel">
 
     <!-- Input header -->
     <div class="input-label-row">
@@ -880,21 +1091,19 @@
     </div>
 
     <!-- Code textarea -->
-    <textarea
-      id="code-input"
-      spellcheck="false"
-      autocorrect="off"
-      autocapitalize="off"
-      placeholder="// Paste your code here, then press Ctrl+Enter to analyze
-// Example (Java — off-by-one bug):
-public int findMax(int[] arr) {
-    int max = arr[0];
-    for (int i = 0; i <= arr.length; i++) {   // ← bug here
-        if (arr[i] > max) max = arr[i];
-    }
-    return max;
-}"
-    ></textarea>
+    <div class="editor-shell">
+      <div id="monaco-editor" aria-label="Code editor"></div>
+      <div class="editor-empty-state" id="editor-empty-state">Drop your buggy code here.
+BugLens detects runtime issues, logic bugs, null references, and performance problems.</div>
+      <textarea
+        id="code-input"
+        class="hidden-textarea"
+        spellcheck="false"
+        autocorrect="off"
+        autocapitalize="off"
+        aria-hidden="true"
+      ></textarea>
+    </div>
 
     <!-- Action bar -->
     <div class="action-bar">
@@ -931,9 +1140,19 @@ public int findMax(int[] arr) {
         </button>
       </div>
     </div>
+  </section>
 
     <!-- ─── RESULTS PANEL ─── -->
+    <aside class="analysis-panel">
     <div id="results-panel">
+      <div class="analysis-empty" id="analysis-empty">
+        <strong>AI Analysis Panel</strong><br/>
+        Error severity, confidence score, root cause explanation, suggested fixes, and code diff preview appear here after analysis.
+      </div>
+      <div class="compiler-error-card" id="compiler-error-card">
+        <div class="compiler-error-title">Compiler/Syntax Error Detected</div>
+        <div class="compiler-error-text" id="compiler-error-text"></div>
+      </div>
 
       <!-- Result header: icon + verdict + confidence -->
       <div class="result-header" id="result-header">
@@ -998,6 +1217,7 @@ public int findMax(int[] arr) {
       </div>
 
     </div><!-- #results-panel -->
+    </aside>
 
   </main>
 </div><!-- .app-body -->
@@ -1184,6 +1404,91 @@ const aboutLink        = $('about-link');
 const modalClose       = $('modal-close');
 const demoToggle       = $('demo-toggle');
 const demoActiveBadge  = $('demo-active-badge');
+const monacoHost       = $('monaco-editor');
+const editorEmptyState = $('editor-empty-state');
+const analysisEmpty    = $('analysis-empty');
+const compilerErrorCard = $('compiler-error-card');
+const compilerErrorText = $('compiler-error-text');
+
+let monacoEditor       = null;
+let monacoResizeObserver = null;
+
+function setCodeValue(nextValue) {
+  const value = nextValue || '';
+  codeInput.value = value;
+  if (monacoEditor && monacoEditor.getValue() !== value) monacoEditor.setValue(value);
+  updateEditorEmptyState();
+}
+
+function focusCodeEditor() {
+  if (monacoEditor) monacoEditor.focus();
+  else codeInput.focus();
+}
+
+function updateEditorEmptyState() {
+  const hasValue = !!codeInput.value.trim();
+  editorEmptyState.classList.toggle('hidden', hasValue);
+}
+
+function initMonaco() {
+  if (!window.require || !monacoHost) return;
+  window.require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs' } });
+  window.require(['vs/editor/editor.main'], function () {
+    monacoEditor = monaco.editor.create(monacoHost, {
+      value: codeInput.value || '',
+      language: 'java',
+      theme: 'vs-dark',
+      automaticLayout: true,
+      minimap: {
+        enabled: true,
+        side: 'right',
+        size: 'proportional',
+        autohide: true,
+      },
+      lineNumbers: 'on',
+      scrollBeyondLastLine: false,
+      wordWrap: 'off',
+      fontFamily: '"JetBrains Mono", Consolas, monospace',
+      fontSize: 13,
+      renderLineHighlight: 'all',
+      roundedSelection: true,
+      smoothScrolling: true,
+      cursorBlinking: 'smooth',
+      padding: { top: 12, bottom: 12 },
+      scrollbar: {
+        horizontal: 'auto',
+        vertical: 'auto',
+        horizontalScrollbarSize: 10,
+        verticalScrollbarSize: 10,
+        alwaysConsumeMouseWheel: false,
+      },
+    });
+    monacoEditor.onDidChangeModelContent(() => {
+      codeInput.value = monacoEditor.getValue();
+      codeInput.dispatchEvent(new Event('input'));
+      updateEditorEmptyState();
+    });
+
+    const relayoutEditor = () => {
+      if (!monacoEditor || !monacoHost) return;
+      const width = Math.max(0, Math.floor(monacoHost.clientWidth));
+      const height = Math.max(0, Math.floor(monacoHost.clientHeight));
+      monacoEditor.layout({ width, height });
+    };
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(relayoutEditor);
+    });
+    window.addEventListener('resize', relayoutEditor);
+
+    if (window.ResizeObserver) {
+      monacoResizeObserver = new ResizeObserver(() => relayoutEditor());
+      monacoResizeObserver.observe(monacoHost);
+    }
+
+    updateEditorEmptyState();
+  });
+}
 
 // ────────────────────────────────────────────────────────────────────
 // Hardcoded examples
@@ -1277,6 +1582,11 @@ function switchLang(lang) {
   });
   currentLang = lang;
   updateModelBadge();
+  if (monacoEditor && window.monaco) {
+    const map = { java: 'java', c: 'c', cpp: 'cpp', python: 'python' };
+    const model = monacoEditor.getModel();
+    if (model) monaco.editor.setModelLanguage(model, map[lang] || 'plaintext');
+  }
 }
 
 function updateModelBadge() {
@@ -1301,12 +1611,16 @@ function updateCharCounter() {
 // Clear
 // ────────────────────────────────────────────────────────────────────
 btnClear.addEventListener('click', () => {
-  codeInput.value = '';
+  setCodeValue('');
   updateCharCounter();
   hideResultsPanel();
 });
 
 function hideResultsPanel() {
+  if (analysisEmpty) analysisEmpty.style.display = '';
+  if (compilerErrorCard) compilerErrorCard.style.display = 'none';
+  confBadge.style.display = '';
+  resultSub.style.display = '';
   resultsPanel.classList.remove('animated');
   setTimeout(() => {
     resultsPanel.classList.remove('visible');
@@ -1334,10 +1648,10 @@ document.querySelectorAll('.example-item').forEach(item => {
 function loadExample(lang) {
   const code = EXAMPLES[lang];
   if (!code) return;
-  codeInput.value = code;
+  setCodeValue(code);
   updateCharCounter();
   switchLang(lang);
-  codeInput.focus();
+  focusCodeEditor();
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1390,6 +1704,7 @@ function setLoading(on) {
   btnAnalyze.disabled       = on;
   spinner.style.display     = on ? 'block' : 'none';
   analyzeLabel.textContent  = on ? 'Analyzing…' : 'Analyze Code';
+  resultsPanel.classList.toggle('loading', on);
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1397,6 +1712,10 @@ function setLoading(on) {
 // ────────────────────────────────────────────────────────────────────
 function renderResult(data, originalCode) {
   const pct = Math.round(data.confidence * 100);
+  if (analysisEmpty) analysisEmpty.style.display = 'none';
+  if (compilerErrorCard) compilerErrorCard.style.display = 'none';
+  confBadge.style.display = '';
+  resultSub.style.display = '';
 
   // — Animate panel in —
   resultsPanel.style.display = 'flex';
@@ -1407,12 +1726,24 @@ function renderResult(data, originalCode) {
   }));
 
   // — Result header —
-  if (data.is_bug) {
+  const bugType = String(data.bug_type || '').toLowerCase();
+  const isCompilerStatusError = String(data.status || '').toLowerCase() === 'compiler_error';
+  const isCompilerSyntaxError = isCompilerStatusError || (
+    data.is_bug && (
+    bugType.includes('syntax')
+    || bugType.includes('compiler')
+    || String(data.validation_stage || '').includes('compiler')
+    )
+  );
+
+  if (isCompilerSyntaxError || data.is_bug) {
     resultHeader.className = 'result-header bug';
     resultIcon.innerHTML   = warnSVG();
     resultTitle.className  = 'result-title bug';
-    resultTitle.textContent= data.bug_type || 'Bug Detected';
-    resultSub.textContent  = currentLang.toUpperCase() + ' · ' + pct + '% confidence';
+    resultTitle.textContent= isCompilerSyntaxError ? 'Compiler/Syntax Error Detected' : (data.bug_type || 'Bug Detected');
+    resultSub.textContent  = isCompilerSyntaxError
+      ? (data.description || 'Compiler validation failed.')
+      : (currentLang.toUpperCase() + ' · ' + pct + '% confidence');
   } else {
     resultHeader.className = 'result-header clean';
     resultIcon.innerHTML   = checkSVG();
@@ -1422,11 +1753,23 @@ function renderResult(data, originalCode) {
   }
 
   // — Confidence badge —
-  confBadge.textContent  = pct + '% confidence';
-  confBadge.className    = 'conf-badge ' + (pct >= 80 ? 'hi' : pct >= 55 ? 'med' : 'lo');
+  if (isCompilerSyntaxError) {
+    confBadge.style.display = 'none';
+    resultSub.style.display = 'none';
+  } else {
+    confBadge.textContent  = pct + '% confidence';
+    confBadge.className    = 'conf-badge ' + (pct >= 80 ? 'hi' : pct >= 55 ? 'med' : 'lo');
+  }
+
+  if (isCompilerSyntaxError && compilerErrorCard && compilerErrorText) {
+    const lines = Array.isArray(data.compiler_errors) ? data.compiler_errors : [];
+    const details = lines.length ? lines.join('\n') : (data.description || 'Compilation failed.');
+    compilerErrorText.textContent = details;
+    compilerErrorCard.style.display = 'block';
+  }
 
   // — Description card (bug only) —
-  if (data.is_bug && data.description) {
+  if ((data.is_bug || isCompilerSyntaxError) && data.description) {
     descText.textContent  = data.description;
     if (data.line_number > 0) {
       lineBadge.textContent  = 'Line ' + data.line_number;
@@ -1440,7 +1783,7 @@ function renderResult(data, originalCode) {
   }
 
   // — Code comparison (bug only) —
-  if (data.is_bug && data.fixed_code) {
+  if (data.is_bug && !isCompilerSyntaxError && data.fixed_code) {
     const hljsLang = { java: 'java', c: 'c', cpp: 'cpp', python: 'python' }[currentLang] || 'plaintext';
 
     yourCodeEl.className   = 'language-' + hljsLang;
@@ -1519,9 +1862,9 @@ btnUseFix.addEventListener('click', () => useThisFix(lastFixedCode));
 
 async function useThisFix(fixedCode) {
   if (!fixedCode) return;
-  codeInput.value = fixedCode;
+  setCodeValue(fixedCode);
   updateCharCounter();
-  codeInput.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  monacoHost.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   await new Promise(r => setTimeout(r, 300));
   analyzeCode();
 }
@@ -1591,7 +1934,7 @@ function renderHistory() {
     `;
 
     card.addEventListener('click', () => {
-      codeInput.value = entry.code;
+      setCodeValue(entry.code || '');
       updateCharCounter();
       switchLang(entry.lang);
     });
@@ -1699,6 +2042,8 @@ demoToggle.addEventListener('change', () => {
 // Init
 // ────────────────────────────────────────────────────────────────────
 renderComplexity(0, '');
+initMonaco();
+updateEditorEmptyState();
 checkHealth();
 </script>
 </body>

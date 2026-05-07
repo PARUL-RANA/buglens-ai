@@ -12,6 +12,8 @@ import ast
 import logging
 import os
 import re
+import subprocess
+import tempfile
 import time
 from typing import Any, Optional
 
@@ -166,10 +168,11 @@ def buggy_response(
     line_number: int,
     description: str,
     fixed_code: str,
+    extra_fields: Optional[dict[str, Any]] = None,
 ) -> Any:
     """Return a JSON response describing a detected bug."""
     complexity = compute_complexity(code)
-    return jsonify({
+    payload: dict[str, Any] = {
         "is_bug": True,
         "confidence": round(confidence, 4),
         "bug_type": bug_type,
@@ -179,7 +182,10 @@ def buggy_response(
         "complexity_score": complexity["complexity_score"],
         "quality_grade": complexity["quality_grade"],
         "language": language,
-    })
+    }
+    if extra_fields:
+        payload.update(extra_fields)
+    return jsonify(payload)
 
 
 def _nearest_sample_by_bug_type(
@@ -306,9 +312,243 @@ def _pattern_bugs_precheck(
         fixed_code=str(best.get("fixed_code", code)),
     )
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+
+def _line_number_for_offset(text: str, offset: int) -> int:
+    """Convert a character offset into a 1-based line number."""
+    if offset <= 0:
+        return 1
+    return text.count("\n", 0, min(offset, len(text))) + 1
+
+
+def _run_javac_validation(code: str) -> Optional[dict[str, Any]]:
+    """
+    Compile Java code with javac and return structured compiler errors if any.
+    """
+    class_match = re.search(r"\bpublic\s+class\s+([A-Za-z_]\w*)", code)
+    class_name = class_match.group(1) if class_match else "BugLensSnippet"
+    filename = f"{class_name}.java"
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="buglens_java_") as tmpdir:
+            java_path = os.path.join(tmpdir, filename)
+            with open(java_path, "w", encoding="utf-8") as f:
+                f.write(code)
+
+            print("RUNNING JAVAC VALIDATION")
+            proc = subprocess.run(
+                [r"C:\Program Files\Java\jdk-21\bin\javac.exe", filename],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            print("RETURN CODE:", proc.returncode)
+            print("STDERR:", proc.stderr)
+    except FileNotFoundError:
+        # Keep ML as primary fallback if javac is unavailable on host.
+        return None
+    except subprocess.TimeoutExpired:
+        return {
+            "line_number": 1,
+            "description": "Java compiler validation timed out.",
+            "compiler_errors": ["javac timed out while validating source."],
+        }
+    except Exception as exc:
+        return {
+            "line_number": 1,
+            "description": f"Java compiler validation failed: {exc}",
+            "compiler_errors": [str(exc)],
+        }
+
+    if proc.returncode == 0:
+        return None
+
+    raw_err = (proc.stderr or proc.stdout or "").strip()
+    raw_lines = [ln for ln in raw_err.splitlines() if ln.strip()]
+    first_line = next((ln for ln in raw_lines if ".java:" in ln), raw_lines[0] if raw_lines else "Compilation failed.")
+    line_match = re.search(r":(\d+):", first_line)
+    line_no = int(line_match.group(1)) if line_match else 1
+    message = first_line.split("error:", 1)[-1].strip() if "error:" in first_line else first_line
+    return {
+        "line_number": line_no,
+        "description": f"Compiler/Syntax Error Detected: {message}",
+        "compiler_errors": raw_lines[:8],
+    }
+
+
+def _run_native_compiler_validation(code: str, language: str) -> Optional[dict[str, Any]]:
+    """
+    Compile C/C++ snippets and return structured compiler errors if present.
+    """
+    if language == "c":
+        compiler = "gcc"
+        filename = "snippet.c"
+    elif language == "cpp":
+        compiler = "g++"
+        filename = "snippet.cpp"
+    else:
+        return None
+
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"buglens_{language}_") as tmpdir:
+            src_path = os.path.join(tmpdir, filename)
+            with open(src_path, "w", encoding="utf-8") as f:
+                f.write(code)
+
+            proc = subprocess.run(
+                [compiler, "-fsyntax-only", src_path],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+    except FileNotFoundError:
+        return {
+            "line_number": 1,
+            "description": f"Compiler/Syntax Error Detected: {compiler} is not available on this system.",
+            "compiler_errors": [f"{compiler} executable not found in PATH."],
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "line_number": 1,
+            "description": f"Compiler/Syntax Error Detected: {compiler} validation timed out.",
+            "compiler_errors": [f"{compiler} timed out while validating source."],
+        }
+    except Exception as exc:
+        return {
+            "line_number": 1,
+            "description": f"Compiler/Syntax Error Detected: {compiler} validation failed.",
+            "compiler_errors": [str(exc)],
+        }
+
+    if proc.returncode == 0:
+        return None
+
+    raw_err = (proc.stderr or proc.stdout or "").strip()
+    raw_lines = [ln for ln in raw_err.splitlines() if ln.strip()]
+    first_line = raw_lines[0] if raw_lines else "Compilation failed."
+    line_match = re.search(r":(\d+):(\d+)?:", first_line)
+    line_no = int(line_match.group(1)) if line_match else 1
+    message = first_line.split("error:", 1)[-1].strip() if "error:" in first_line else first_line
+    return {
+        "line_number": line_no,
+        "description": f"Compiler/Syntax Error Detected: {message}",
+        "compiler_errors": raw_lines[:8],
+    }
+
+
+def _basic_delimiter_error(code: str) -> Optional[tuple[str, int]]:
+    """
+    Detect obvious delimiter issues using a simple stack parser.
+    Ignores delimiters inside string literals.
+    """
+    pairs = {")": "(",
+             "}": "{",
+             "]": "["}
+    opens = set(pairs.values())
+    closes = set(pairs.keys())
+    stack: list[tuple[str, int]] = []
+    in_single = False
+    in_double = False
+    escaped = False
+
+    for idx, ch in enumerate(code):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and (in_single or in_double):
+            escaped = True
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if in_single or in_double:
+            continue
+
+        if ch in opens:
+            stack.append((ch, idx))
+        elif ch in closes:
+            if not stack or stack[-1][0] != pairs[ch]:
+                return (f"Unmatched '{ch}' delimiter.", _line_number_for_offset(code, idx))
+            stack.pop()
+
+    if in_single or in_double:
+        return ("Unterminated string literal.", _line_number_for_offset(code, len(code)))
+    if stack:
+        open_ch, open_pos = stack[-1]
+        return (f"Unclosed '{open_ch}' delimiter.", _line_number_for_offset(code, open_pos))
+    return None
+
+
+def _looks_like_missing_semicolon(line: str) -> bool:
+    """
+    Lightweight heuristic for obvious missing ';' in C/C++/Java.
+    """
+    s = line.strip()
+    if not s:
+        return False
+    if s.startswith(("//", "/*", "*", "#")):
+        return False
+    if s.endswith((";", "{", "}", ":", ",")):
+        return False
+    if s.startswith(("if ", "if(", "for ", "for(", "while ", "while(", "switch ", "switch(", "catch ", "catch(")):
+        return False
+    if s.startswith(("class ", "struct ", "enum ", "interface ", "@")):
+        return False
+    if s.startswith(("public ", "private ", "protected ")) and "(" in s and ")" in s:
+        return False
+    return "=" in s or "return " in s or s.endswith(")")
+
+
+def _lightweight_syntax_validation(code: str, language: str) -> Optional[dict[str, Any]]:
+    """
+    Detect obvious syntax/compiler errors before ML prediction.
+    Returns structured metadata when a clear syntax error is found.
+    """
+    if language == "python":
+        try:
+            ast.parse(code)
+        except SyntaxError as exc:
+            return {
+                "line_number": int(getattr(exc, "lineno", 1) or 1),
+                "description": f"Python syntax error: {exc.msg}.",
+                "compiler_errors": [f"Line {int(getattr(exc, 'lineno', 1) or 1)}: {exc.msg}"],
+            }
+        return None
+
+    if language == "java":
+        javac_issue = _run_javac_validation(code)
+        if javac_issue is not None:
+            return javac_issue
+
+    if language in {"c", "cpp"}:
+        native_issue = _run_native_compiler_validation(code, language)
+        if native_issue is not None:
+            return native_issue
+
+    delimiter_issue = _basic_delimiter_error(code)
+    if delimiter_issue is not None:
+        msg, line_no = delimiter_issue
+        return {
+            "line_number": int(line_no),
+            "description": f"Syntax validation failed: {msg}",
+        }
+
+    if language in {"java", "c", "cpp"}:
+        for i, line in enumerate(code.splitlines(), start=1):
+            if _looks_like_missing_semicolon(line):
+                return {
+                    "line_number": i,
+                    "description": "Possible syntax/compiler error: missing semicolon at line end.",
+                }
+
+    return None
+
 
 @app.route("/")
 def index() -> Any:
@@ -351,13 +591,64 @@ def analyze() -> Any:
     if len(code) > MAX_CODE_LEN:
         return jsonify({"error": "Code too long (max 10000 chars)"}), 400
 
+    # ── Lightweight syntax/compiler validation (before ML) ───────────────────
+    print("RUNNING VALIDATION BEFORE ML")
+    syntax_issue = _lightweight_syntax_validation(code, language)
+    if syntax_issue is not None:
+        print(f"[SYNTAX] blocked ML for {language}: {syntax_issue['description']}")
+        return jsonify({
+            "status": "compiler_error",
+            "is_bug": True,
+            "bug_type": "compiler_error",
+            "description": syntax_issue["description"],
+            "compiler_errors": syntax_issue.get("compiler_errors", []),
+            "line_number": syntax_issue.get("line_number", 1),
+            "language": language,
+        })
+
     feature: str = f"{language} {code}"
     X_input = vectorizers[language].transform([feature])
 
-    # ── Pattern precheck (before ML) ─────────────────────────────────────────
+        # ── Pattern precheck (before ML) ─────────────────────────────────────────
     pre = _pattern_bugs_precheck(code, language, X_input)
     if pre is not None:
         return pre
+
+    normalized = re.sub(r"\s+", "", code).lower()
+
+    if language in ["c", "cpp", "java"]:
+        if "while(1)" in normalized and "break" not in normalized:
+            fixed = code.replace(
+                "while(1) {",
+                "int count = 0;\n\nwhile(count < 10) {\n    count++;"
+            )
+
+            return buggy_response(
+                code=code,
+                language=language,
+                confidence=0.98,
+                bug_type="infinite_loop",
+                line_number=1,
+                description="Potential infinite loop detected.",
+                fixed_code=fixed,
+            )
+
+    if language == "python":
+        if "whiletrue:" in normalized and "break" not in normalized:
+            fixed = code.replace(
+                "while True:",
+                "count = 0\n\nwhile count < 10:\n    count += 1"
+            )
+
+            return buggy_response(
+                code=code,
+                language=language,
+                confidence=0.98,
+                bug_type="infinite_loop",
+                line_number=1,
+                description="Potential infinite loop detected.",
+                fixed_code=fixed,
+            )
 
     # ── Fingerprint check — exact match against known fixed_code values ───────
     metadata: dict[int, dict[str, Any]] = sample_lookups[language]["metadata"]
